@@ -1,0 +1,152 @@
+
+rm(list = ls())
+library(GEOquery)
+library(openxlsx)
+library(dplyr)
+library(tidyverse)
+# 1.Download
+GSET <- getGEO("GSE76275",AnnotGPL = FALSE, getGPL = F,destdir = ".")
+group <- pData(GSET[[1]])
+TNBC <- filter(group,characteristics_ch1.11=="triple-negative status: TN"|characteristics_ch1.12=="triple-negative status: TN"|characteristics_ch1.13=="triple-negative status: TN") %>% mutate(.,Class=c(rep("TNBC",198))) %>% select(.,1,2,70)
+N_TNBC <- filter(group,characteristics_ch1.11!="triple-negative status: TN"&characteristics_ch1.12!="triple-negative status: TN"&characteristics_ch1.13 !="triple-negative status: TN") %>% mutate(.,Class=c(rep("N_TNBC",67)))%>% select(.,1,2,70)
+group <- rbind(TNBC,N_TNBC)
+
+write.csv(group,"5000_group.csv")
+set <- read.table("GSE76275_series_matrix.txt.gz",sep = "\t",header = T,fill=T,comment.char = "!",row.names = 1)
+set <- set[,group$geo_accession]
+#判断列名是否和分组匹配
+names(set)==group$geo_accession
+#2.进行ID转换
+GPL <- getGEO("GPL570",destdir = ".")
+colnames(Table(GPL))
+ID <- data.frame("ID" <- Table(GPL)[[1]],"Gene sympol" <- Table(GPL)[[11]],"ENTREZ_GENE_ID" <- Table(GPL)[[12]])
+set <- mutate(set,"Gene sympol"=ID$X.Gene.sympol.....Table.GPL...11..)
+set <- set[,c(266,1:265)]
+#转换ID
+sett <- ID[ID$X.ID.....Table.GPL...1.. %in% rownames(set),]
+set <- set[sett$X.ID.....Table.GPL...1..,]
+# rownames(set) <- sett$X.Gene.sympol.....Table.GPL...11..
+#重复基因求和
+library(limma)
+settt <- avereps(set[,-1],ID=set$`Gene sympol`) %>% as.data.frame()##取平均后的值
+write.csv(settt,"set.csv")
+
+#3.制作比较矩阵
+#制作比较矩阵
+# group <- pData(GSET[[1]]) %>% select(.,1:2,8)
+# group <-as.data.frame(group)
+group_c <- group[,3]
+design <- model.matrix(~0+factor(group_c))
+colnames(design)=levels(factor(group_c))
+rownames(design)=rownames(group)
+contrast.matrix<-makeContrasts("TNBC-N_TNBC",levels=design)
+
+#4.差异分析
+#4.1是否校正表达矩阵 这个数据没有做
+expreSet <- settt
+boxplot(expreSet,outline=FALSE, notch=T,col=as.factor(group$Class), las=2)
+
+
+library(limma) 
+expreSet=normalizeBetweenArrays(expreSet)
+boxplot(expreSet,outline=FALSE, notch=T,col=group_fac, las=2)
+dat<- expreSet  %>% as.data.frame()
+
+#差异分析
+##step1
+dat <- settt
+fit <- lmFit(dat,design)
+
+##step2
+fit2 <- contrasts.fit(fit, contrast.matrix)
+fit2 <- eBayes(fit2)  
+##step3
+options(digits = 4)
+tempOutput = topTable(fit2, coef=1, n=Inf,adjust='BH')
+
+allDEG2 = na.omit(tempOutput) 
+adj.P.Val = 0.05 # 自定义
+foldChange= 1 # 自定义
+nrDEG_DESeq2_signif = allDEG2[(allDEG2$P.Value< adj.P.Val& 
+                                 (allDEG2$logFC>foldChange | allDEG2$logFC<(-foldChange))),]
+
+write.csv(allDEG2,"allDEG2.csv")
+
+write.csv(nrDEG_DESeq2_signif,"nrDEG_limma_signif.csv")
+
+#5.画图
+
+###读取数据
+###画火山图
+express <- read.csv("nrDEG_limma_signif.csv",sep=",") #有差异
+
+allDEG2 <- read.csv("allDEG2.csv",sep=",",row.names = 1)#总的数据
+
+
+library(ggrepel)
+#根据FC和Pvalue分组
+data <- 
+  allDEG2 %>% 
+  mutate(scale= as.factor(ifelse(adj.P.Val < 0.05 & abs(logFC) > 1,
+                                 ifelse(logFC > 1 ,'Up','Down'),'No change'))) ##整体数据
+table(data$scale)
+
+#绘图标记
+
+ggplot(data,aes(logFC, -log10(P.Value)))+geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "#999999") + 
+  geom_vline(xintercept = c(-1,1), linetype = "dashed", color = "#999999") + 
+  geom_point(aes(color = scale),
+             size = 1, 
+             alpha = 0.5) + 
+  theme_bw(base_size = 18) + 
+  scale_color_manual(values = c('Down' = 'blue', 'Up' = 'red',"No change"="grey"))+ 
+  theme(panel.grid = element_blank(),legend.position = 'right') + 
+  coord_cartesian(ylim = c(0,100),xlim =c(-6,6)) +  #不会裁剪数据
+  scale_x_continuous(breaks = seq(-6,6, by =2))+
+  scale_y_continuous(breaks = seq(0,100,by=20))+ xlab("Log2FC")+ylab("-log10(pvalue)")
+
+# ###画热图
+# 
+# ###获取标准化数据和分组
+# express <- read.csv("Normal_express.csv",sep=",",row.names = 1)
+# group_3 <- group
+# colnames(express)==group$sample
+
+
+
+######画热图 原始数据取了log2
+#获取矩阵 =
+choose_50 <- arrange(express,adj.P.Val)%>% .[1:50,] #选择P前50
+
+# choose_50 <- arrange(express, desc(logFC))%>% .[1:50,] 选择差异倍数前50
+rownames(express) <- express$X
+set <- settt[choose_50$X,] %>% scale(.,center = T) 
+rownames(set)<- gsub("///.*", "", rownames(set)) #保留一个行名
+
+# set <- log10(set+1)
+
+
+#读入注释数据
+
+group_4 <- group[,c(2:3)]
+sort <-group_4
+
+#
+# install.packages("ComplexHeatmap")
+library(BiocManager)
+# BiocManager::install("ComplexHeatmap")
+# BiocManager::install("circlize")
+
+library(ComplexHeatmap)
+library(circlize)
+library(pheatmap)
+Heatmap(set)
+
+
+#添加注释
+ha <- HeatmapAnnotation(Group=sort$Class,col=list(Group=c("TNBC"="#7C87B5","N_TNBC"="#F1B37D")))
+
+Heatmap(
+  set, 
+  top_annotation = ha,cluster_rows = T,cluster_columns = F,show_column_names = F,row_names_gp = gpar(fontsize = 8))
+
