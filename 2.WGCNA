@@ -1,0 +1,173 @@
+rm(list=ls())
+setwd("D:\\研一\\珊姐\\5000块\\yuan5000\\WGCNA")
+
+library(dplyr)
+library(tidyverse)
+library(openxlsx)
+
+##一.数据准备
+set <- read.csv("D:\\研一\\珊姐\\5000块\\yuan5000\\差异分析\\set.csv",sep=",",row.names = 1)
+group <- read.csv("D:\\研一\\珊姐\\5000块\\yuan5000\\差异分析\\5000_group.csv",sep=",")
+rownames(group) <- group$X
+
+#将原始的count数据转换为cpm数据
+# library(edgeR)
+# CPM_AD <- cpm(AD) %>% as.data.frame()
+# exp <- log(CPM_AD+1)
+
+##二\WGCNA
+library(WGCNA)  #加载WGCNA包
+options(stringsAsFactors = FALSE)
+#1.数据准备
+#1.1转置生成行为样本，列为基因
+exp <- t(set) %>% as.data.frame()
+# rownames(exp) <- AD_group$grou
+#1.2检查是否有缺失和NA  T 没有
+gsa <- goodSamplesGenes(exp,verbose = 3)
+gsa$allOK
+#1.3检查是否有离群样本 
+sampleTree = hclust(dist(exp), method = "average")
+sizeGrWindow(12,9) #视图
+par(cex = 0.6);
+par(mar = c(0,4,2,0))
+plot(sampleTree, main = "Sample clustering to detect outliers", sub="", xlab="", cex.lab = 1.5,
+     cex.axis = 1.5, cex.main = 2)
+
+##如果有离群删除离群
+abline(h = 130, col = "red") #划定需要剪切的枝长
+clust = cutreeStatic(sampleTree, cutHeight = 130, minSize = 10)
+#这时候会从高度为15这里横切，把离群样本分开
+table(clust)   
+keepSamples = (clust==1)  #保留非离群(clust==1)的样本
+exp = exp[keepSamples, ]  #去除离群值后的数据
+nGenes = ncol(exp)
+nSamples = nrow(exp)
+# rownames(group) <- group$X
+#1.4读取表型 行名为样本 列为表型,表芯必须为数值型
+group <- group[rownames(exp),]%>%.[,4] %>% as.data.frame() 
+group <- mutate(group,class=recode(.,"TNBC"=1,"N_TNBC"=0))
+groupp <- group[,-1] %>% as.data.frame()
+rownames(groupp) <- rownames(exp)
+
+#1.5表型与样本关联
+sampleTree2 = hclust(dist(exp), method = "average")
+traitColors = numbers2colors(groupp, signed = FALSE) #用颜色代表关联度
+
+plotDendroAndColors(sampleTree2, traitColors,
+                    groupLabels = names(groupp),
+                    main = "Sample dendrogram and trait heatmap")
+#2.构建表达网络
+#2.1估算软阈值
+library(WGCNA)
+options(stringsAsFactors = FALSE);
+enableWGCNAThreads()  #开启多线程
+
+powers = c(c(1:10), seq(from = 12, to=20, by=2))
+sft = pickSoftThreshold(exp, powerVector = powers,verbose = 5,networkType = "signed")
+#2.2 对软阈值进行绘图，确定选择，一般选第一个到达0.9的，最低可降到0.8
+sizeGrWindow(9, 5);
+par(mfrow = c(1,2));
+cex1 = 0.9;
+plot(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+     xlab="Soft Threshold (power)",ylab="Scale Free Topology Model Fit,signed R^2",type="n",
+     main = paste("Scale independence"));
+text(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+     labels=powers,cex=cex1,col="red");
+abline(h=0.9,col="red")
+axis(side=2,at=0.9)#查看位于0.85以上的点，可以改变高度值,最低不能低于0.8
+
+# # 选择最佳，如果没有就选择第一个到达红线的
+# softPower =sft$powerEstimate
+# sft$powerEstimate
+# 平均连接度，到达16开始扁平
+plot(sft$fitIndices[,1], sft$fitIndices[,5],
+     xlab="Soft Threshold (power)",ylab="Mean Connectivity", type="n",
+     main = paste("Mean connectivity"))
+text(sft$fitIndices[,1], sft$fitIndices[,5], labels=powers, cex=cex1,col="red")
+#2.3一步法计算模块 power软阈值，minModuleSize = 30 最小基因，mergeCutHeight = 0.25 保留高度 unsigned 不区分正负相关
+net = blockwiseModules(exp, power = 18,
+                       TOMType = "signed", minModuleSize = 30,
+                       reassignThreshold = 0, mergeCutHeight = 0.2,
+                       numericLabels = TRUE, pamRespectsDendro = FALSE,
+                       saveTOMs = TRUE,
+                       saveTOMFileBase = "femaleMouseTOM",
+                       verbose = 3)
+table(net$colors) #查看模块数量
+
+
+sizeGrWindow(12, 9)
+mergedColors = labels2colors(net$colors)
+plotDendroAndColors(net$dendrograms[[1]], mergedColors[net$blockGenes[[1]]],
+                    "Module colors",
+                    dendroLabels = FALSE, hang = 0.03,
+                    addGuide = TRUE, guideHang = 0.05)
+#2.4保存模块结果
+moduleLabels = net$colors
+moduleColors = labels2colors(net$colors)
+MEs = net$MEs;
+geneTree = net$dendrograms[[1]];
+save(MEs, moduleLabels, moduleColors, geneTree,
+     file = "FemaleLiver-02-networkConstruction-auto.RData")
+#3计算相关性
+
+lnames = load(file = "FemaleLiver-02-networkConstruction-auto.RData")
+nGenes = ncol(exp)
+nSamples = nrow(exp)
+#3.1重新计算带有颜色标签的模块 exp 为表达矩阵 datTraits为表型 也就是groupp
+MEs0 = moduleEigengenes(exp, moduleColors)$eigengenes
+MEs = orderMEs(MEs0)
+moduleTraitCor = cor(MEs, groupp, use = "p",method="spearman");
+moduleTraitPvalue = corPvalueStudent(moduleTraitCor, nSamples)
+# 3.2过相关值对每个关联进行颜色编码
+sizeGrWindow(10,6)
+# 展示模块与表型数据的相关系数和 P值
+textMatrix = paste(signif(moduleTraitCor, 2), "\n(",
+                   signif(moduleTraitPvalue, 3), ")", sep = "");
+dim(textMatrix) = dim(moduleTraitCor)
+par(mar = c(6, 8.5, 3, 3))
+# 用热图的形式展示相关系数
+labeledHeatmap(Matrix = moduleTraitCor,
+               xLabels = names(groupp),
+               yLabels = names(MEs),
+               ySymbols = names(MEs),
+               colorLabels = FALSE,
+               colors = blueWhiteRed(50),
+               textMatrix = textMatrix,
+               setStdMargins = FALSE,
+               cex.text = 0.5,
+               zlim = c(-1,1),
+               main = paste("Module-trait relationships"))
+
+
+#提取感兴趣模块基因
+
+A<- colnames(exp)[moduleColors == "yellow"] %>% as.data.frame()
+B<- colnames(exp)[moduleColors == "lightyellow"] %>% as.data.frame()
+write.csv (A,"yellow.csv")
+write.csv (B,"lightyellow.csv")
+
+
+#WGCNA 与PPIHUb 取交集
+
+library(VennDiagram)
+PPI <- read.csv("D:\\研一\\珊姐\\5000块\\yuan5000\\PPI和HUb\\cpm_con_DEG.csv",row.names=1,sep=",")
+
+dev.off()
+dev.new()
+x<-list(WGCNA=A$., CytoHubba <-as.character(PPI$.))
+names(x)[2]<- c("CytoHubba")
+
+mm<- venn.diagram(x, filename = NULL, fill = c("#EDA1A4","#A4CB9E"),scaled=F, cat.cex = 1.5,cat.pos = c(180,180),cex = 1.5)
+grid.draw(mm)
+
+mm<- venn.diagram(x, filename = NULL, fill = c("#9DB4CE", "#F9C08A", "#EDA1A4", "#B3D8D5","#A4CB9E"),rotation.degree = 60)
+
+
+
+
+
+####寻找ab 之间的交集
+
+library("dplyr")
+bd <- Reduce(intersect,x) %>% as.data.frame()
+write.csv(bd,file ="cpm_con_DEG.csv",row.names=T)
