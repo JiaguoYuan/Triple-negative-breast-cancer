@@ -1,36 +1,25 @@
 setwd("D:\\研一\\珊姐\\5000块\\yuan5000\\Lasso")
-#https://www.jianshu.com/p/eb91ee88d3cb
-
-
 library(dplyr)
 library(tidyverse)
 set <- read.csv("D:\\研一\\珊姐\\5000块\\yuan5000\\差异分析\\set.csv",sep=",",row.names = 1)
 group <- read.csv("D:\\研一\\珊姐\\5000块\\yuan5000\\差异分析\\5000_group.csv",sep=",")
-#1.构建表达矩阵
-# FOXM1
-# EZH2
-# ASPM
-# ANLN
-# NUF2
-# NDC80
+
+#1.1 
 A <- c("FOXM1","EZH2","ASPM","ANLN","NUF2","NDC80")
 exp <- set[A,] %>% t() %>% as.data.frame() %>% mutate(.,Class=group$Class)
 
-#1.2将变量类型转换为同类数值型
+#1.2
 exp$Class<- ifelse(exp$Class=="TNBC",1,0)
 
-#2设置结局变量等
+#1.3 Set outcome variables
 library("glmnet")
-y <- as.matrix(exp$Class)#结局变量
-x <- as.matrix(exp[,1:6])#自变量
+y <- as.matrix(exp$Class)
+x <- as.matrix(exp[,1:6])
 
-#3.binomial 因变量为二分类,alpha=1 表示L1正则化，也就是lasso
-set.seed(12345)#设置随机数
+#1.4.binomial 
+set.seed(12345)
 lasso_model <- glmnet(x,y,family="binomial",alpha=1)
 print(lasso_model)
-#解释 %Dev 模型拟合优度 越接近1越好
-
-
 #4.可视化 s= 选择lambda 大小
 plot(lasso_model,
      xvar = "lambda",
@@ -43,74 +32,42 @@ plot(mod_cv)
 
 lamabdamin <- mod_cv$lambda.min
 lamabdalse <- mod_cv$lambda.1se
-
 coef_lasso <- coef(lasso_model,s=0.004807645)
 coef_lasso
 
-#根据回归系数计算OR
+#1.5
 exp(coef_lasso)
 coef_lasso <- coef_lasso %>% as.matrix() %>% as.data.frame()
 coef_lasso$OR <-exp(coef_lasso$s1)
 
-#挑选OR不为1
 lasso <- filter(coef_lasso,OR!=1) %>% .[-1,]
-
-#提取表达矩阵
 lasso_exp <- set[rownames(lasso),]
 
-
-#######################################画一个ROC
+#2.ROC
 #1.构建矩阵
-exp <- set[A,] %>% t() %>% as.data.frame() %>% mutate(.,Class=group$Class) %>% .[,-2]
-
-
-#加载ROC曲线需要的R包
-# library(BiocManager)
-# BiocManager::install("pROC")
+exp <- set[A,] %>% t() %>% as.data.frame() %>% mutate(.,Class=group$Class) %>% .[,-2])
 library(pROC)
 library(ggplot2)
 IL36G_t <- exp 
-
-# ROC计算 (IL36G_t[,6] 分组
 rocobj <- roc(IL36G_t[,6], IL36G_t[,4],
-              smooth = F, levels=c("N_TNBC","TNBC")     # 曲线是否光滑，当光滑时，无法计算置信区间 前一个为对照
-) 
-# # 计算临界点/阈值
-# cutOffPoint <- coords(rocobj, "best")
-
-# 计算AUC值
+              smooth = F, levels=c("N_TNBC","TNBC")    
 auc<-auc(rocobj)[1]
-# # AUC的置信区间
-# auc_low<-ci(rocobj,of="auc")[1]
-# auc_high<-ci(rocobj,of="auc")[3]
-# 
-# # 计算置信区间
-# ciobj <- ci.se(rocobj,specificities=seq(0, 1, 0.01))
-# data_ci<-ciobj[1:101,1:3]
-# data_ci<-as.data.frame(data_ci)
-# x=as.numeric(rownames(data_ci))
-# data_ci<-data.frame(x,data_ci)
-
-# 绘图
 ggroc(rocobj,
       color="red",
       size=1,
       legacy.axes = TRUE)+
   theme_bw()+
-  geom_segment(aes(x = 0, y = 0, xend = 1, yend = 1),        # 绘制对角线
+  geom_segment(aes(x = 0, y = 0, xend = 1, yend = 1),       
                colour='grey', 
                linetype = 'dotdash',size=1)+theme(
                  axis.title.x = element_text(hjust = 0.5))+annotate("text",x=0.75,y=0.25,label=paste("AUC = ", round(auc,2)),size=6)+ggtitle(colnames(IL36G_t)[4]) +#修改
   theme(plot.title = element_text(hjust = 0.5))
 
-
-
-
-############做一个GO和KEGG富集吧
+#3.Enrichment analysis
+#3.1
 library(clusterProfiler)
 library(org.Hs.eg.db)
 keytypes(org.Hs.eg.db)
-
 EntrezID<-mapIds(x <-org.Hs.eg.db,keys = con$CTRC,keytype = "SYMBOL",column = "ENTREZID") %>% as.data.frame(.) %>% na.omit
 colnames(EntrezID)<-c("ENTREZID")
 head(EntrezID)
@@ -118,23 +75,20 @@ head(EntrezID)
 CTCF <- read.csv("CTCF.csv",sep=",",row.names = 1) 
 colnames(CTCF)<-c("ENTREZID")
 
-#KEGG 富集
+#3.2 KEGG
 KK <- enrichKEGG(gene = CTCF$ENTREZID,keyType = "kegg",organism = "Mm",pvalueCutoff = 0.05,qvalueCutoff = 0.5,pAdjustMethod = "none",use_internal_data=F)
-
 KKK= data.frame(KK) %>% na.omit
 
 cbind(EntrezID,KKK)
-
 dotplot(KK)
 barplot(KK)
 write.xlsx(KKK,"Post_Pre_KEGG_rusult.xlsx")
-#Go富集
+
+#3.3 Go
 Go <- enrichGO(gene = CTCF$ENTREZID,keyType = "ENTREZID",OrgDb = org.Mm.eg.db,pvalueCutoff = 0.05,qvalueCutoff = 0.1, ont ="ALL")
 Goo= data.frame(Go) %>% na.omit
-
 dotplot(Go)
 barplot(Go)
-#输出 
 write.xlsx(diss,"Post_Pre_limma_diss.xlsx",rowNames=T)
 write.xlsx(Goo,"Post_Pre_Go_rusult.xlsx")
 
